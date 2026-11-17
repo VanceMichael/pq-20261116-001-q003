@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { isIP } from "node:net";
+import { buildConditionalHeaders, readValidators } from "./http-validators.js";
 
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -25,16 +26,17 @@ export class PageFetcher {
     this.now = now;
   }
 
-  async fetchFeed(feed) {
+  async fetchFeed(feed, options = {}) {
     const initial = new URL(feed.baseUrl);
     const allowedHosts = feed.allowedHosts ?? [];
     assertAllowed(initial, allowedHosts);
     const startedAt = new Date(this.now()).toISOString();
-    const result = await this.requestWithRedirects(initial, allowedHosts);
-    return { ...result, requestedUrl: initial.href, startedAt };
+    const conditionalHeaders = buildConditionalHeaders(options.validators);
+    const result = await this.requestWithRedirects(initial, allowedHosts, conditionalHeaders);
+    return { ...result, requestedUrl: initial.href, startedAt, conditional: Boolean(Object.keys(conditionalHeaders).length) };
   }
 
-  async requestWithRedirects(initialUrl, allowedHosts) {
+  async requestWithRedirects(initialUrl, allowedHosts, conditionalHeaders = {}) {
     let currentUrl = initialUrl;
     const visited = new Set();
     let attemptCount = 0;
@@ -43,11 +45,24 @@ export class PageFetcher {
       assertAllowed(currentUrl, allowedHosts);
       if (visited.has(currentUrl.href)) throw fetchError("redirect_loop", "source returned a redirect loop");
       visited.add(currentUrl.href);
-      const response = await this.requestWithRetry(currentUrl);
+      // Validators describe one specific representation. After a redirect the
+      // request targets a different resource, so never forward them there.
+      const hopHeaders = currentUrl.href === initialUrl.href ? conditionalHeaders : {};
+      const response = await this.requestWithRetry(currentUrl, hopHeaders);
       attemptCount += response.attemptCount;
       lastStatus = response.status;
       if (response.status === 304) {
-        return { status: 304, html: null, finalUrl: currentUrl.href, attemptCount, headers: response.headers };
+        // A 304 is only meaningful when this request actually carried a
+        // conditional header; otherwise it is an upstream protocol violation.
+        if (!Object.keys(hopHeaders).length) {
+          await response.body?.cancel();
+          throw Object.assign(fetchError("unexpected_not_modified", "source returned HTTP 304 without a conditional request"), {
+            attemptCount, httpStatus: 304
+          });
+        }
+        await response.body?.cancel();
+        return { status: 304, html: null, finalUrl: currentUrl.href, attemptCount, headers: response.headers,
+          validators: readValidators(response.headers) };
       }
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
@@ -66,19 +81,21 @@ export class PageFetcher {
         throw fetchError("content_type", `source returned unsupported content type: ${contentType}`, response.status);
       }
       const html = await readBoundedText(response, this.maxBytes);
-      return { status: response.status, html, finalUrl: currentUrl.href, attemptCount, headers: response.headers };
+      return { status: response.status, html, finalUrl: currentUrl.href, attemptCount, headers: response.headers,
+        validators: readValidators(response.headers) };
     }
     throw fetchError("redirect_limit", "source exceeded redirect limit", lastStatus);
   }
 
-  async requestWithRetry(url) {
+  async requestWithRetry(url, conditionalHeaders = {}) {
     let lastError;
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       try {
         const response = await this.fetchImpl(url.href, {
           method: "GET",
           redirect: "manual",
-          headers: { accept: "text/html,application/xhtml+xml;q=0.9", "user-agent": "RollingNewsArchive/1.0" },
+          headers: { accept: "text/html,application/xhtml+xml;q=0.9", "user-agent": "RollingNewsArchive/1.0",
+            ...conditionalHeaders },
           signal: AbortSignal.timeout(this.timeoutMs)
         });
         if (!RETRYABLE_STATUS.has(response.status) || attempt === this.maxAttempts) {

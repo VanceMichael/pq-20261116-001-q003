@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { dirname, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export function openDatabase(filename) {
   const path = resolve(filename);
@@ -17,6 +17,11 @@ export function migrate(database) {
   const version = database.prepare("PRAGMA user_version").get().user_version;
   if (version > SCHEMA_VERSION) throw new Error(`database schema ${version} is newer than supported ${SCHEMA_VERSION}`);
   if (version === SCHEMA_VERSION) return;
+  if (version === 0) migrateFromScratch(database);
+  else if (version === 1) migrateToVersion2(database);
+}
+
+function migrateFromScratch(database) {
   database.exec(`
     BEGIN IMMEDIATE;
     CREATE TABLE IF NOT EXISTS feeds (
@@ -92,10 +97,38 @@ export function migrate(database) {
       changed_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS review_events_article_time ON review_events(article_id, event_id DESC);
-    PRAGMA user_version = 1;
+    ${SOURCE_VALIDATORS_TABLE}
+    PRAGMA user_version = 2;
     COMMIT;
   `);
 }
+
+function migrateToVersion2(database) {
+  database.exec(`
+    BEGIN IMMEDIATE;
+    ${SOURCE_VALIDATORS_TABLE}
+    PRAGMA user_version = 2;
+    COMMIT;
+  `);
+}
+
+/**
+ * Validators are scoped by feed and by the exact URL they were served for, so
+ * a changed source URL can never reuse a validator from an unrelated page.
+ * capture_id points at the last capture whose representation those validators
+ * describe, which is what a later 304 refers to.
+ */
+const SOURCE_VALIDATORS_TABLE = `
+    CREATE TABLE IF NOT EXISTS source_validators (
+      feed_id TEXT NOT NULL REFERENCES feeds(feed_id),
+      source_url TEXT NOT NULL,
+      etag TEXT,
+      last_modified TEXT,
+      capture_id INTEGER REFERENCES captures(capture_id),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(feed_id, source_url)
+    );
+    CREATE INDEX IF NOT EXISTS source_validators_capture ON source_validators(capture_id);`;
 
 export function closeDatabase(database) {
   if (database?.isOpen) database.close();

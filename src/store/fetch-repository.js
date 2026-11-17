@@ -14,6 +14,14 @@ export class FetchRepository {
       SUM(CASE WHEN outcome='failed' THEN 1 ELSE 0 END) AS failed,
       SUM(CASE WHEN outcome='not_modified' THEN 1 ELSE 0 END) AS not_modified,
       MAX(CASE WHEN outcome='accepted' THEN finished_at END) AS last_success_at,
+      MAX(CASE WHEN outcome='accepted' OR (outcome='not_modified' AND error_code IS NULL)
+        THEN finished_at END) AS last_confirmed_at,
+      MAX(CASE WHEN outcome='accepted' THEN finished_at END) AS last_accepted_at,
+      MAX(CASE WHEN outcome='not_modified' THEN finished_at END) AS last_not_modified_at,
+      MAX(CASE WHEN outcome='rejected' THEN finished_at END) AS last_rejected_at,
+      MAX(CASE WHEN outcome='failed' THEN finished_at END) AS last_failed_at,
+      SUM(CASE WHEN outcome='not_modified' AND error_code='referred_capture_rejected' THEN 1 ELSE 0 END)
+        AS not_modified_rejected,
       MAX(finished_at) AS last_attempt_at
       FROM fetch_attempts WHERE feed_id=? AND finished_at>=?`);
   }
@@ -38,7 +46,13 @@ export class FetchRepository {
       rejected: result.rejected ?? 0,
       failed: result.failed ?? 0,
       notModified: result.not_modified ?? 0,
+      notModifiedRejected: result.not_modified_rejected ?? 0,
       lastSuccessAt: result.last_success_at,
+      lastAcceptedAt: result.last_accepted_at,
+      lastConfirmedAt: result.last_confirmed_at,
+      lastNotModifiedAt: result.last_not_modified_at,
+      lastRejectedAt: result.last_rejected_at,
+      lastFailedAt: result.last_failed_at,
       lastAttemptAt: result.last_attempt_at
     };
   }

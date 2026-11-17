@@ -3,6 +3,7 @@ import { FeedRepository } from "../store/feed-repository.js";
 import { CaptureRepository } from "../store/capture-repository.js";
 import { ArticleRepository } from "../store/article-repository.js";
 import { FetchRepository } from "../store/fetch-repository.js";
+import { ValidatorRepository } from "../store/validator-repository.js";
 import { ImportService } from "../ingest/import-service.js";
 import { PageFetcher } from "../acquisition/page-fetcher.js";
 import { RefreshService } from "./refresh-service.js";
@@ -22,6 +23,7 @@ export class NewsArchive {
     this.captures = new CaptureRepository(this.database);
     this.articles = new ArticleRepository(this.database);
     this.fetches = new FetchRepository(this.database);
+    this.validators = new ValidatorRepository(this.database);
     this.reviews = new ReviewRepository(this.database);
     this.imports = new ImportService({
       database: this.database,
@@ -35,6 +37,8 @@ export class NewsArchive {
       fetches: this.fetches,
       fetcher: options.fetcher ?? new PageFetcher(),
       imports: this.imports,
+      validators: this.validators,
+      captures: this.captures,
       clock: this.clock
     });
     this.changes = new ChangeReportService({ feeds: this.feeds, captures: this.captures, articles: this.articles });
@@ -46,7 +50,11 @@ export class NewsArchive {
   }
 
   registerFeed(input) {
-    return this.feeds.register(input, this.now());
+    const feed = this.feeds.register(input, this.now());
+    // Validators belong to one URL. Re-registering a feed at a new URL must
+    // not leave the old page's validators available for a later request.
+    this.validators.retainOnly(feed.feedId, feed.baseUrl);
+    return feed;
   }
 
   importSnapshot(feedId, html, capturedAt) {
@@ -65,6 +73,7 @@ export class NewsArchive {
       ...feed,
       health: latest ? latest.accepted ? "healthy" : "degraded" : "awaiting_capture",
       latestAttempt: latest,
+      sourceValidators: this.validators.all(feedId),
       statistics: this.articles.stats(feedId),
       collectionHealth: this.health.report(feedId)
     };

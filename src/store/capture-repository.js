@@ -9,6 +9,7 @@ export class CaptureRepository {
       ORDER BY capture_id DESC LIMIT ?`);
     this.latestAccepted = database.prepare(`SELECT capture_id, captured_at, normalized_count FROM captures
       WHERE feed_id=? AND accepted=1 ORDER BY capture_id DESC LIMIT 2`);
+    this.getCapture = database.prepare("SELECT * FROM captures WHERE capture_id=?");
   }
 
   findByFingerprint(feedId, fingerprint) {
@@ -26,6 +27,11 @@ export class CaptureRepository {
   recent(feedId, limit = 20) {
     const safeLimit = Math.max(1, Math.min(100, Number(limit) || 20));
     return this.listCaptures.all(feedId, safeLimit).map(mapCapture);
+  }
+
+  get(captureId) {
+    const row = this.getCapture.get(Number(captureId));
+    return row ? mapCapture(row) : null;
   }
 
   acceptedPair(feedId) {
